@@ -38,6 +38,9 @@ if [ ! -w "$DEST" ]; then
 fi
 mkdir -p "$DEST"
 
+UPDATING=""
+[ -d "$DEST/$APP" ] && UPDATING=1
+
 echo "→ Installing to $DEST"
 # Quit the copy being replaced (only that one) if it's running.
 pkill -f "^$DEST/$APP/Contents/MacOS/ClipStack" 2>/dev/null || true
@@ -45,9 +48,21 @@ rm -rf "${DEST:?}/$APP"
 ditto "$MNT/$APP" "$DEST/$APP"
 xattr -dr com.apple.quarantine "$DEST/$APP" 2>/dev/null || true
 
+if [ -n "$UPDATING" ] && [ -z "${CLIPSTACK_KEEP_PERMISSION:-}" ]; then
+  # macOS ties the paste permission to the exact build it was given to. After an update the
+  # old switch still looks "on" but no longer applies, so clear ClipStack's entry (only its
+  # own) and macOS asks again the next time you paste.
+  tccutil reset Accessibility com.jonathanberg.clipstack >/dev/null 2>&1 || true
+fi
+
 if [ -z "${CLIPSTACK_NO_OPEN:-}" ]; then
   open "$DEST/$APP"
 fi
 
-echo "✓ ClipStack is installed and running in your menu bar."
-echo "  Copy as usual, then press ⌃⌥V anywhere to see your recent clips."
+if [ -n "$UPDATING" ]; then
+  echo "✓ ClipStack is updated and running in your menu bar."
+  echo "  The first time you paste, macOS asks for permission again — switch ClipStack on once."
+else
+  echo "✓ ClipStack is installed and running in your menu bar."
+  echo "  Copy as usual, then press ⌃⌥V anywhere to see your recent clips."
+fi

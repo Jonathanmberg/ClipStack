@@ -16,7 +16,7 @@ Open **Terminal** and paste this:
 curl -fsSL https://raw.githubusercontent.com/Jonathanmberg/ClipStack/main/install.sh | bash
 ```
 
-It downloads the latest version into Applications and opens it, without the "could not verify" warning. Run it again any time to update.
+It downloads the latest version into Applications and opens it, without the "could not verify" warning. Run it again any time to update. After an update, macOS asks once more for paste permission; just switch ClipStack back on.
 
 Prefer a download? Get **ClipStack.dmg** from the [latest release](../../releases/latest) and drag it into Applications. The first time you open it, go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
