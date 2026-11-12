@@ -19,10 +19,17 @@ swift build -c release --arch arm64 --arch x86_64
 BIN=".build/apple/Products/Release/$APP"
 
 echo "→ Making icon"
-if [ ! -f .build/AppIcon.icns ] || [ scripts/make-icon.swift -nt .build/AppIcon.icns ]; then
+# The artwork lives at Resources/AppIcon.png (square); it's placed on the macOS icon grid.
+ART=Resources/AppIcon.png
+if [ ! -f .build/AppIcon.icns ] || [ scripts/make-icon.swift -nt .build/AppIcon.icns ] \
+   || { [ -f "$ART" ] && [ "$ART" -nt .build/AppIcon.icns ]; }; then
   ICONSET=.build/AppIcon.iconset
   rm -rf "$ICONSET" && mkdir -p "$ICONSET"
-  swift scripts/make-icon.swift .build/icon-1024.png
+  if [ -f "$ART" ]; then
+    swift scripts/make-icon.swift .build/icon-1024.png "$ART"
+  else
+    swift scripts/make-icon.swift .build/icon-1024.png
+  fi
   for s in 16 32 128 256 512; do
     sips -z $s $s .build/icon-1024.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
     sips -z $((s*2)) $((s*2)) .build/icon-1024.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null

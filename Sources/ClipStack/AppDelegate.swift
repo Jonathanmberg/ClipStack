@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         self.dataDir = dataDir
         prefs = Preferences(defaults: defaults)
-        history = ClipHistory(limit: prefs.historyLimit, persists: prefs.persistHistory,
+        history = ClipHistory(limit: ClipHistory.defaultLimit, persists: true,
                               storeURL: dataDir.appendingPathComponent("history.json"))
         let prefs = self.prefs
         monitor = ClipboardMonitor(history: history, isPaused: { prefs.paused })
@@ -54,8 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // @Published fires before the value is stored, so use the value handed to the sink.
         prefs.$shortcut.dropFirst().sink { [weak self] in self?.registerShortcut($0) }.store(in: &subscriptions)
-        prefs.$historyLimit.dropFirst().sink { [weak self] in self?.history.limit = $0 }.store(in: &subscriptions)
-        prefs.$persistHistory.dropFirst().sink { [weak self] in self?.history.persists = $0 }.store(in: &subscriptions)
         prefs.$paused.sink { [weak self] in self?.statusItem.button?.appearsDisabled = $0 }.store(in: &subscriptions)
 
         if isTesting {
@@ -63,12 +61,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DistributedNotificationCenter.default().addObserver(
                 forName: .init("com.jonathanberg.clipstack.testing.show"), object: nil, queue: .main
             ) { [weak self] _ in self?.shortcutPressed() }
+            // Opens the overlay, saves a picture of it, and closes it again within a second,
+            // so a test never leaves it holding the keyboard.
             DistributedNotificationCenter.default().addObserver(
                 forName: .init("com.jonathanberg.clipstack.testing.snapshot"), object: nil, queue: .main
             ) { [weak self] _ in
                 guard let self else { return }
-                self.panel.snapshot(to: self.dataDir.appendingPathComponent("panel.png"))
-                self.panel.hide() // never leave a test popup holding the keyboard
+                if !self.panel.isVisible { self.shortcutPressed() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                    self.panel.snapshot(to: self.dataDir.appendingPathComponent("panel.png"))
+                    self.panel.hide()
+                }
             }
         }
 
@@ -88,8 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if panel.isVisible {
             panel.selectNext()
         } else {
-            panel.show(items: history.items, shortcutLabel: prefs.shortcut.displayString,
-                       appearance: prefs.appearance.nsAppearance)
+            panel.show(items: history.items)
         }
     }
 
@@ -192,14 +194,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindow == nil {
             let view = SettingsView(
                 prefs: prefs, system: system,
-                clearHistory: { [weak self] in self?.history.clear() },
                 recordingChanged: { [weak self] recording in
                     guard let self else { return }
                     // Release the shortcut while recording so pressing it again can be captured.
                     if recording { self.hotKey.unregister() } else { self.registerShortcut(self.prefs.shortcut) }
                 })
             let window = NSWindow(contentViewController: NSHostingController(rootView: view))
-            window.title = "ClipStack Settings"
+            window.title = "ClipStack"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
             window.center()

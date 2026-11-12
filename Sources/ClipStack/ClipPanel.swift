@@ -5,7 +5,18 @@ import ClipStackCore
 final class PanelModel: ObservableObject {
     @Published var items: [ClipItem] = []
     @Published var selected = 0
-    @Published var shortcutLabel = ""
+    /// Drives the card sliding up from the bottom edge.
+    @Published var presented = false
+    /// Space taken by the Dock at the bottom of the screen, so the card sits above it.
+    @Published var bottomInset: CGFloat = 0
+    /// Where the mouse was when the list opened. Hover only takes over the highlight once the
+    /// mouse moves away from here, so a resting mouse under the card can't steal ↩.
+    var mouseAtOpen = NSPoint.zero
+
+    var mouseHasMoved: Bool {
+        let now = NSEvent.mouseLocation
+        return abs(now.x - mouseAtOpen.x) > 3 || abs(now.y - mouseAtOpen.y) > 3
+    }
 }
 
 /// A borderless panel that can take keystrokes without activating ClipStack,
@@ -21,53 +32,82 @@ final class KeyPanel: NSPanel {
     }
 }
 
-/// Shows the clip list near the text cursor and handles ↑ ↓ ↩ ⎋, 1–9/0, ⌫ and mouse clicks.
+/// Frosts the whole screen and slides the clip card up from the bottom center.
+/// Handles ↑ ↓ ↩ ⎋, 1–9/0, ⌫ and mouse clicks.
 final class PanelController: NSObject, NSWindowDelegate {
-    static let width: CGFloat = 360
-
     var onChoose: ((ClipItem, NSRunningApplication?) -> Void)?
     var onRemove: ((ClipItem) -> Void)?
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.isVisible && model.presented }
 
     private let panel: KeyPanel
     private let model = PanelModel()
     private var targetApp: NSRunningApplication?
 
     override init() {
-        panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 200),
-                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel = KeyPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                         backing: .buffered, defer: true)
         super.init()
         panel.isFloatingPanel = true
-        panel.level = .popUpMenu
+        panel.level = .popUpMenu // above the menu bar and Dock
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
-        panel.animationBehavior = .utilityWindow
+        panel.animationBehavior = .none
         panel.delegate = self
         panel.onKeyDown = { [weak self] event in self?.handleKey(event) ?? false }
-        panel.contentView = NSHostingView(rootView: ClipListView(model: model) { [weak self] index in
-            self?.choose(index)
-        })
+        panel.contentView = NSHostingView(rootView: OverlayView(
+            model: model,
+            choose: { [weak self] index in self?.choose(index) },
+            dismiss: { [weak self] in self?.hide(animated: true) }))
     }
 
-    func show(items: [ClipItem], shortcutLabel: String, appearance: NSAppearance?) {
+    func show(items: [ClipItem]) {
         targetApp = NSWorkspace.shared.frontmostApplication
+        // The screen you're working on: the one with the mouse.
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+
         model.items = items
         model.selected = 0
-        model.shortcutLabel = shortcutLabel
-        panel.appearance = appearance
-        let size = NSSize(width: Self.width, height: ClipListView.height(rows: items.count))
-        panel.setFrame(NSRect(origin: origin(for: size), size: size), display: true)
+        model.bottomInset = screen.visibleFrame.minY - screen.frame.minY
+        model.mouseAtOpen = mouse
+        model.presented = false
+
+        panel.setFrame(screen.frame, display: false)
+        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
-        panel.invalidateShadow()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            panel.animator().alphaValue = 1
+        }
+        DispatchQueue.main.async {
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.34, dampingFraction: 0.84)) {
+                self.model.presented = true
+            }
+        }
     }
 
-    func hide() {
-        panel.orderOut(nil)
+    /// Animated for cancel; instant after choosing a clip so the paste lands immediately.
+    func hide(animated: Bool = false) {
+        guard panel.isVisible else { return }
+        guard animated else {
+            model.presented = false
+            panel.orderOut(nil)
+            return
+        }
+        withAnimation(.easeIn(duration: 0.14)) { model.presented = false }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.14
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, !self.model.presented else { return } // reopened meanwhile
+            self.panel.orderOut(nil)
+        })
     }
 
     /// Pressing the shortcut again while the list is open moves down one row.
@@ -75,16 +115,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         move(1)
     }
 
-    /// Testing aid: renders the panel's content to a PNG.
+    /// Testing aid: renders the overlay's content (without the live blur) to a PNG.
     func snapshot(to url: URL) {
-        guard let view = panel.contentView else { return }
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        guard let view = panel.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        hide() // clicked somewhere else
+        hide(animated: true) // switched apps or spaces
     }
 
     // MARK: - Keys
@@ -94,7 +134,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case 125, 48: move(1)                // ↓, ⇥
         case 126: move(-1)                   // ↑
         case 36, 76: choose(model.selected)  // ↩, keypad enter
-        case 53: hide()                      // ⎋
+        case 53: hide(animated: true)        // ⎋
         case 51, 117: removeSelected()       // ⌫, ⌦
         default:
             // 1–9 paste that row right away, 0 pastes row 10.
@@ -120,91 +160,72 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func removeSelected() {
         guard model.items.indices.contains(model.selected) else { return }
-        let item = model.items.remove(at: model.selected)
-        model.selected = min(model.selected, max(0, model.items.count - 1))
-        onRemove?(item)
-        // Shrink from the bottom, keeping the top edge where it was.
-        var frame = panel.frame
-        let newHeight = ClipListView.height(rows: model.items.count)
-        frame.origin.y += frame.height - newHeight
-        frame.size.height = newHeight
-        panel.setFrame(frame, display: true)
-        panel.invalidateShadow()
-    }
-
-    // MARK: - Placement
-
-    /// Just below the text cursor if we can find it, otherwise below the mouse; kept on screen.
-    private func origin(for size: NSSize) -> NSPoint {
-        let anchor = Caret.rect() ?? NSRect(origin: NSEvent.mouseLocation, size: .zero)
-        let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main ?? NSScreen.screens[0]
-        let area = screen.visibleFrame.insetBy(dx: 8, dy: 8)
-        var x = anchor.minX
-        var y = anchor.minY - size.height - 6
-        if y < area.minY { y = anchor.maxY + 6 } // no room below: open above
-        x = min(max(x, area.minX), area.maxX - size.width)
-        y = min(max(y, area.minY), area.maxY - size.height)
-        return NSPoint(x: x, y: y)
+        withAnimation(.easeOut(duration: 0.15)) {
+            let item = model.items.remove(at: model.selected)
+            model.selected = min(model.selected, max(0, model.items.count - 1))
+            onRemove?(item)
+        }
     }
 }
 
 // MARK: - Views
 
-struct ClipListView: View {
+/// Full-screen light frost with the clip card at the bottom center.
+struct OverlayView: View {
+    @ObservedObject var model: PanelModel
+    var choose: (Int) -> Void
+    var dismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // A light frost: the blur is faded so the screen stays recognizable behind it.
+            VisualEffect(material: .fullScreenUI, alpha: 0.75)
+            // Clicking anywhere outside the card closes it.
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture(perform: dismiss)
+            ClipCard(model: model, choose: choose)
+                .padding(.bottom, model.bottomInset + 56)
+                .offset(y: model.presented ? 0 : 220)
+                .opacity(model.presented ? 1 : 0)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+/// Just the clips: number, text. Nothing else.
+struct ClipCard: View {
     @ObservedObject var model: PanelModel
     var choose: (Int) -> Void
 
-    static let headerHeight: CGFloat = 30
-    static let rowHeight: CGFloat = 30
-    static let listPadding: CGFloat = 6
-    static let footerHeight: CGFloat = 24
-
-    static func height(rows: Int) -> CGFloat {
-        headerHeight + 1 + listPadding * 2 + CGFloat(max(rows, 1)) * rowHeight + 1 + footerHeight
-    }
+    static let width: CGFloat = 520
+    private let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("ClipStack").font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text(model.shortcutLabel).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: Self.headerHeight)
-
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
-
-            VStack(spacing: 0) {
-                if model.items.isEmpty {
-                    Text("Nothing copied yet — copy something with ⌘C")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
-                } else {
-                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                        ClipRow(index: index, item: item, selected: index == model.selected)
-                            .onHover { inside in if inside { model.selected = index } }
-                            .onTapGesture { choose(index) }
-                    }
+        VStack(spacing: 2) {
+            if model.items.isEmpty {
+                Text("Nothing copied yet")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+            } else {
+                ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                    ClipRow(index: index, item: item, selected: index == model.selected)
+                        .onContinuousHover { phase in
+                            if case .active = phase, model.mouseHasMoved, model.selected != index {
+                                model.selected = index
+                            }
+                        }
+                        .onTapGesture { choose(index) }
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, Self.listPadding)
-
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
-
-            Text("↑↓ choose   ↩ paste   ⌫ remove   esc close")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity)
-                .frame(height: Self.footerHeight)
         }
-        .frame(width: PanelController.width, height: Self.height(rows: model.items.count), alignment: .top)
-        .background(VisualEffect())
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+        .padding(6)
+        .frame(width: Self.width)
+        .background(VisualEffect(material: .popover))
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 30, y: 12)
     }
 }
 
@@ -214,41 +235,43 @@ struct ClipRow: View {
     let selected: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(index < 10 ? "\((index + 1) % 10)" : " ")
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+        HStack(spacing: 14) {
+            Text(index < 10 ? "\((index + 1) % 10)" : "")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
-                .frame(width: 12)
-            Text(item.preview())
-                .font(.system(size: 13))
+                .foregroundStyle(selected ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+                .frame(width: 10)
+            Text(item.preview(maxLength: 90))
+                .font(.system(size: 14))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .foregroundStyle(selected ? Color.white : Color.primary)
+                .foregroundStyle(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
             Spacer(minLength: 0)
-            if item.isURL {
-                Image(systemName: "link")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
-            }
         }
-        .padding(.horizontal, 8)
-        .frame(height: ClipListView.rowHeight)
-        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(selected ? Color.accentColor : Color.clear))
+        .padding(.horizontal, 14)
+        .frame(height: 40)
+        // A soft neutral highlight instead of the system accent blue.
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color.primary.opacity(selected ? 0.08 : 0)))
         .contentShape(Rectangle())
     }
 }
 
-/// The native translucent menu material.
+/// Native blur material. Kept active even though ClipStack is never the frontmost app.
 struct VisualEffect: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var alpha: CGFloat = 1
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
-        view.material = .menu
         view.blendingMode = .behindWindow
-        view.state = .active // stay translucent even though ClipStack isn't the active app
+        view.state = .active
+        updateNSView(view, context: context)
         return view
     }
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.alphaValue = alpha
+    }
 }

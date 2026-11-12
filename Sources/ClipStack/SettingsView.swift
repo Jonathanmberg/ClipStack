@@ -3,14 +3,12 @@ import ServiceManagement
 import SwiftUI
 import ClipStackCore
 
-/// Things the settings screen shows that live outside Preferences.
+/// State shown in the menu bar and settings that lives outside Preferences.
 final class SystemState: ObservableObject {
-    @Published var canAutoPaste = Paster.canAutoPaste
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var shortcutTaken = false
 
     func refresh() {
-        canAutoPaste = Paster.canAutoPaste
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -24,10 +22,10 @@ final class SystemState: ObservableObject {
     }
 }
 
+/// The only setting: the shortcut that opens ClipStack.
 struct SettingsView: View {
     @ObservedObject var prefs: Preferences
     @ObservedObject var system: SystemState
-    var clearHistory: () -> Void
     var recordingChanged: (Bool) -> Void
 
     var body: some View {
@@ -35,66 +33,27 @@ struct SettingsView: View {
             Section {
                 LabeledContent("Open ClipStack") {
                     HStack(spacing: 8) {
-                        ShortcutRecorder(shortcut: $prefs.shortcut, recordingChanged: recordingChanged)
                         if prefs.shortcut != .default {
                             Button("Reset") { prefs.shortcut = .default }
                         }
+                        ShortcutRecorder(shortcut: $prefs.shortcut, recordingChanged: recordingChanged)
                     }
                 }
-                if system.shortcutTaken {
-                    Text("Another app is already using \(prefs.shortcut.displayString). Pick a different shortcut.")
-                        .font(.callout).foregroundStyle(.red)
-                }
-            } header: {
-                Text("Shortcut")
             } footer: {
-                Text("Press it anywhere, use ↑ ↓ to pick a clip, ↩ to paste it.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-
-            Section("History") {
-                Picker("Keep the last", selection: $prefs.historyLimit) {
-                    ForEach(ClipHistory.allowedLimits, id: \.self) { Text("\($0) clips").tag($0) }
-                }
-                Toggle("Remember clips after restart", isOn: $prefs.persistHistory)
-                Toggle("Pause collecting", isOn: $prefs.paused)
-                Button("Clear History", role: .destructive, action: clearHistory)
-            }
-
-            Section("Appearance") {
-                Picker("Popup", selection: $prefs.appearance) {
-                    ForEach(AppearanceMode.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section("General") {
-                Toggle("Launch at login", isOn: Binding(
-                    get: { system.launchAtLogin },
-                    set: { system.setLaunchAtLogin($0) }))
-                LabeledContent("Paste automatically") {
-                    if system.canAutoPaste {
-                        Label("Allowed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Group {
+                    if system.shortcutTaken {
+                        Text("Another app is already using \(prefs.shortcut.displayString). Pick a different shortcut.")
+                            .foregroundStyle(.red)
                     } else {
-                        Button("Allow in Accessibility…") {
-                            Paster.requestAccess()
-                            Paster.openAccessibilitySettings()
-                        }
+                        Text("Click the shortcut, then press the keys you want. It needs ⌘, ⌥ or ⌃.")
+                            .foregroundStyle(.secondary)
                     }
                 }
-                if !system.canAutoPaste {
-                    Text("Without this, ClipStack copies the clip and you press ⌘V yourself.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-            }
-
-            Section {
-                Text("Your clips never leave this Mac. No accounts, no analytics, no network.")
-                    .font(.callout).foregroundStyle(.secondary)
+                .font(.callout)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440)
+        .frame(width: 420)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

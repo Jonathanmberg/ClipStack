@@ -65,36 +65,3 @@ enum Paster {
         }
     }
 }
-
-/// Where the text cursor is on screen, when the focused app exposes it through Accessibility.
-enum Caret {
-    static func rect() -> NSRect? {
-        guard AXIsProcessTrusted() else { return nil }
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.1) // never let a slow app delay the popup
-
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
-        let element = focused as! AXUIElement
-
-        var range: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &range) == .success,
-              let range else { return nil }
-
-        var bounds: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute as CFString,
-                                                         range, &bounds) == .success,
-              let bounds, CFGetTypeID(bounds) == AXValueGetTypeID() else { return nil }
-        var r = CGRect.zero
-        guard AXValueGetValue(bounds as! AXValue, .cgRect, &r), r.height > 0 else { return nil }
-
-        // Accessibility uses top-left screen coordinates; AppKit uses bottom-left.
-        guard let primary = NSScreen.screens.first else { return nil }
-        let flipped = NSRect(x: r.minX, y: primary.frame.maxY - r.maxY, width: max(r.width, 1), height: r.height)
-        // Some apps report (0,0) or off-screen garbage; only trust a rect that's on a screen.
-        guard NSScreen.screens.contains(where: { $0.frame.contains(flipped.origin) }),
-              !(r.minX == 0 && r.minY == 0) else { return nil }
-        return flipped
-    }
-}
