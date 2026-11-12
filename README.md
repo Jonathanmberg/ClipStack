@@ -10,7 +10,7 @@ ClipStack remembers the last five things you copied. Press ⌃⌥V anywhere and 
 
 ## Install
 
-Open **Terminal** and paste this:
+Open **Terminal** and paste:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Jonathanmberg/ClipStack/main/install.sh | bash
