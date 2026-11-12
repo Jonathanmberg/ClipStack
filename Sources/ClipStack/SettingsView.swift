@@ -1,0 +1,143 @@
+import AppKit
+import ServiceManagement
+import SwiftUI
+import ClipStackCore
+
+/// Things the settings screen shows that live outside Preferences.
+final class SystemState: ObservableObject {
+    @Published var canAutoPaste = Paster.canAutoPaste
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var shortcutTaken = false
+
+    func refresh() {
+        canAutoPaste = Paster.canAutoPaste
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            NSLog("ClipStack: launch at login failed: \(error.localizedDescription)")
+        }
+        refresh()
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var prefs: Preferences
+    @ObservedObject var system: SystemState
+    var clearHistory: () -> Void
+    var recordingChanged: (Bool) -> Void
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Open ClipStack") {
+                    HStack(spacing: 8) {
+                        ShortcutRecorder(shortcut: $prefs.shortcut, recordingChanged: recordingChanged)
+                        if prefs.shortcut != .default {
+                            Button("Reset") { prefs.shortcut = .default }
+                        }
+                    }
+                }
+                if system.shortcutTaken {
+                    Text("Another app is already using \(prefs.shortcut.displayString). Pick a different shortcut.")
+                        .font(.callout).foregroundStyle(.red)
+                }
+            } header: {
+                Text("Shortcut")
+            } footer: {
+                Text("Press it anywhere, use ↑ ↓ to pick a clip, ↩ to paste it.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+
+            Section("History") {
+                Picker("Keep the last", selection: $prefs.historyLimit) {
+                    ForEach(ClipHistory.allowedLimits, id: \.self) { Text("\($0) clips").tag($0) }
+                }
+                Toggle("Remember clips after restart", isOn: $prefs.persistHistory)
+                Toggle("Pause collecting", isOn: $prefs.paused)
+                Button("Clear History", role: .destructive, action: clearHistory)
+            }
+
+            Section("Appearance") {
+                Picker("Popup", selection: $prefs.appearance) {
+                    ForEach(AppearanceMode.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section("General") {
+                Toggle("Launch at login", isOn: Binding(
+                    get: { system.launchAtLogin },
+                    set: { system.setLaunchAtLogin($0) }))
+                LabeledContent("Paste automatically") {
+                    if system.canAutoPaste {
+                        Label("Allowed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else {
+                        Button("Allow in Accessibility…") {
+                            Paster.requestAccess()
+                            Paster.openAccessibilitySettings()
+                        }
+                    }
+                }
+                if !system.canAutoPaste {
+                    Text("Without this, ClipStack copies the clip and you press ⌘V yourself.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Text("Your clips never leave this Mac. No accounts, no analytics, no network.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Click, then press the new key combination. Esc cancels.
+struct ShortcutRecorder: View {
+    @Binding var shortcut: Shortcut
+    var recordingChanged: (Bool) -> Void
+    @State private var recording = false
+    @State private var monitor: Any?
+
+    var body: some View {
+        Button(recording ? "Type a shortcut…" : shortcut.displayString) {
+            recording ? stop() : start()
+        }
+        .frame(minWidth: 120)
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        recording = true
+        recordingChanged(true)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { // esc
+                stop()
+                return nil
+            }
+            let candidate = Shortcut(event: event)
+            if candidate.isUsable {
+                shortcut = candidate
+                stop()
+            } else {
+                NSSound.beep() // needs ⌘, ⌥ or ⌃
+            }
+            return nil
+        }
+    }
+
+    private func stop() {
+        guard recording else { return }
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        recording = false
+        recordingChanged(false)
+    }
+}

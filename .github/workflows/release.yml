@@ -1,0 +1,59 @@
+# Push a tag like v0.1.0 to build ClipStack.dmg and attach it to a GitHub Release.
+#
+# Signing + notarization run only when these repository secrets exist:
+#   DEVELOPER_ID_P12           base64 of your "Developer ID Application" certificate (.p12)
+#   DEVELOPER_ID_P12_PASSWORD  its export password
+#   DEVELOPER_ID_NAME          e.g. "Developer ID Application: Jonathan Berg (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password)
+# Without them the release is ad-hoc signed (users must right-click → Open the first time).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      HAS_CERT: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: swift test
+
+      - name: Import signing certificate
+        if: env.HAS_CERT == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          KEYCHAIN_PW=$(uuidgen)
+          echo "$P12" | base64 --decode > cert.p12
+          security create-keychain -p "$KEYCHAIN_PW" build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PW" build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+          security import cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" build.keychain
+          rm cert.p12
+
+      - name: Build
+        env:
+          CODESIGN_IDENTITY: ${{ env.HAS_CERT == 'true' && secrets.DEVELOPER_ID_NAME || '-' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: ./build.sh
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ClipStack.dmg
+          generate_release_notes: true
