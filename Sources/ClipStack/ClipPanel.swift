@@ -199,24 +199,48 @@ struct ClipCard: View {
     var choose: (Int) -> Void
 
     static let width: CGFloat = 520
+    /// At most this many rows are on screen; the rest scroll into view as you move down.
+    static let visibleRows = 3
+    static let rowSpacing: CGFloat = 2
     private let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
 
+    private var listHeight: CGFloat {
+        let rows = CGFloat(min(model.items.count, Self.visibleRows))
+        return rows * ClipRow.height + max(rows - 1, 0) * Self.rowSpacing
+    }
+
     var body: some View {
-        VStack(spacing: 2) {
+        Group {
             if model.items.isEmpty {
                 Text("Nothing copied yet")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 40)
             } else {
-                ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                    ClipRow(index: index, item: item, selected: index == model.selected)
-                        .onContinuousHover { phase in
-                            if case .active = phase, model.mouseHasMoved, model.selected != index {
-                                model.selected = index
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        VStack(spacing: Self.rowSpacing) {
+                            ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                                ClipRow(index: index, item: item, selected: index == model.selected)
+                                    .id(index)
+                                    .onContinuousHover { phase in
+                                        if case .active = phase, model.mouseHasMoved, model.selected != index {
+                                            model.selected = index
+                                        }
+                                    }
+                                    .onTapGesture { choose(index) }
                             }
                         }
-                        .onTapGesture { choose(index) }
+                    }
+                    .scrollIndicators(.never)
+                    .frame(height: listHeight)
+                    // Keep the highlighted row on screen: scroll just enough as you move past the edge.
+                    .onChange(of: model.selected) { selected in
+                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(selected) }
+                    }
+                    .onChange(of: model.presented) { presented in
+                        if presented { proxy.scrollTo(0, anchor: .top) }
+                    }
                 }
             }
         }
@@ -230,6 +254,8 @@ struct ClipCard: View {
 }
 
 struct ClipRow: View {
+    static let height: CGFloat = 40
+
     let index: Int
     let item: ClipItem
     let selected: Bool
@@ -249,7 +275,7 @@ struct ClipRow: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
-        .frame(height: 40)
+        .frame(height: Self.height)
         // A soft neutral highlight instead of the system accent blue.
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color.primary.opacity(selected ? 0.08 : 0)))

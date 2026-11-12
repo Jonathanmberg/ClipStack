@@ -9,11 +9,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor: ClipboardMonitor
     private let hotKey = HotKey()
     private let panel = PanelController()
+    private let toast = Toast()
     private let system = SystemState()
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var subscriptions = Set<AnyCancellable>()
     private var askedForAccessThisLaunch = false
+    private var accessTimer: Timer?
     private let isTesting: Bool
     private let dataDir: URL
 
@@ -43,11 +45,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Only one ClipStack at a time: the copy opened last takes over. Two copies would fight
+        // over the shortcut, and only the one macOS granted Accessibility to can paste.
+        var replacedAnother = false
+        if !isTesting, let id = Bundle.main.bundleIdentifier {
+            for other in NSRunningApplication.runningApplications(withBundleIdentifier: id) where other != .current {
+                other.terminate()
+                replacedAnother = true
+            }
+        }
+
         setUpStatusItem()
         monitor.start()
 
         hotKey.onPress = { [weak self] in self?.shortcutPressed() }
         registerShortcut(prefs.shortcut)
+        if replacedAnother, system.shortcutTaken {
+            // The old copy may still be letting go of the shortcut.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self else { return }
+                self.registerShortcut(self.prefs.shortcut)
+            }
+        }
 
         panel.onChoose = { [weak self] item, app in self?.paste(item, into: app) }
         panel.onRemove = { [weak self] item in self?.history.remove(item.id) }
@@ -79,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             prefs.hasOnboarded = true
             DispatchQueue.main.async { self.showWelcome() }
         }
+        if !isTesting {
+            watchForPasteAccess()
+        }
     }
 
     // MARK: - Shortcut → popup → paste
@@ -95,15 +117,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Until macOS allows auto-paste, check every 1.5 s, and confirm on screen the moment it does,
+    /// so nobody has to guess whether the switch worked or restart the app.
+    private func watchForPasteAccess() {
+        guard accessTimer == nil, !Paster.canAutoPaste else { return }
+        Diagnostics.log("auto-paste not allowed yet; watching. app=\(Bundle.main.bundlePath)")
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
+            guard let self, Paster.canAutoPaste else { return }
+            timer.invalidate()
+            self.accessTimer = nil
+            Diagnostics.log("auto-paste allowed")
+            self.toast.show("Auto-paste is on ✓",
+                            detail: "Press \(self.prefs.shortcut.displayString), pick a clip and press ↩ — it pastes where you're typing.")
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        accessTimer = timer
+    }
+
     private func paste(_ item: ClipItem, into app: NSRunningApplication?) {
         Paster.copy(item.text)
         monitor.skipCurrent() // our own write is not a new copy
         history.promote(item.id)
+        Diagnostics.log("paste: postEventAccess=\(CGPreflightPostEventAccess()) axTrusted=\(AXIsProcessTrusted()) "
+            + "target=\(app?.bundleIdentifier ?? "none") app=\(Bundle.main.bundlePath)")
         if Paster.canAutoPaste {
             Paster.pressPaste(in: app)
         } else {
-            // It's on the clipboard; the user presses ⌘V. Ask once per launch for auto-paste.
-            app?.activate(options: [])
+            // Not allowed to press ⌘V: say so, so it never looks like nothing happened.
+            app?.activate(options: [.activateIgnoringOtherApps])
+            toast.show("Copied — press ⌘V to paste",
+                       detail: "To paste automatically, turn on ClipStack in System Settings → Privacy & Security → Accessibility.")
             if !askedForAccessThisLaunch {
                 askedForAccessThisLaunch = true
                 Paster.requestAccess()

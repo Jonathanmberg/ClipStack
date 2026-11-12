@@ -4,7 +4,7 @@
 # Optional, for a release that opens without Gatekeeper warnings:
 #   CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   → also notarize + staple
-# Without these the app is ad-hoc signed (fine for building it yourself).
+# Without these the app is ad-hoc signed, or signed with .signing/identity if present (see below).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -43,11 +43,21 @@ cp "$BIN" "$BUNDLE/Contents/MacOS/$APP"
 cp Resources/Info.plist "$BUNDLE/Contents/Info.plist"
 cp .build/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
 
-echo "→ Signing ($IDENTITY)"
-if [ "$IDENTITY" = "-" ]; then
-  codesign --force --sign - "$BUNDLE"
-else
+echo "→ Signing"
+# Optional local identity, never committed: put the name of one of your certificates
+# (from `security find-identity -v -p codesigning`) in .signing/identity. A fixed identity
+# keeps macOS's Accessibility permission for ClipStack across rebuilds; ad-hoc doesn't.
+LOCAL_ID=""
+[ -f .signing/identity ] && LOCAL_ID=$(head -1 .signing/identity)
+if [ "$IDENTITY" != "-" ]; then
   codesign --force --options runtime --timestamp --sign "$IDENTITY" "$BUNDLE"
+  echo "  with CODESIGN_IDENTITY"
+elif [ -n "$LOCAL_ID" ]; then
+  codesign --force --sign "$LOCAL_ID" "$BUNDLE"
+  echo "  with the identity in .signing/identity"
+else
+  codesign --force --sign - "$BUNDLE"
+  echo "  ad-hoc"
 fi
 
 echo "→ Making DMG"

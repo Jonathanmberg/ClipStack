@@ -7,12 +7,14 @@ import Carbon
 /// Sending a synthetic ⌘V requires the Accessibility permission. Without it ClipStack still
 /// copies the clip, and the user presses ⌘V themselves.
 enum Paster {
-    static var canAutoPaste: Bool { AXIsProcessTrusted() }
+    /// Whether macOS lets this exact copy of ClipStack send keystrokes.
+    static var canAutoPaste: Bool { CGPreflightPostEventAccess() || AXIsProcessTrusted() }
 
     /// Shows the system "allow Accessibility" prompt (only appears if not yet allowed).
     static func requestAccess() {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        CGRequestPostEventAccess()
     }
 
     static func openAccessibilitySettings() {
@@ -27,17 +29,20 @@ enum Paster {
     }
 
     static func pressPaste(in app: NSRunningApplication?) {
-        if let app, app != NSRunningApplication.current, !app.isActive {
-            app.activate(options: [])
+        // The popup held the keyboard; hand focus back explicitly, even if the app still
+        // counts as "active", so the ⌘V lands in its text field and not nowhere.
+        if let app, app != NSRunningApplication.current {
+            app.activate(options: [.activateIgnoringOtherApps])
         }
-        // Give the target app a moment to take focus back from the popup.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             let v = keyCode(for: "v") ?? 9
-            let source = CGEventSource(stateID: .combinedSessionState)
+            // A private source so modifier keys still physically held (⌃⌥ from the shortcut)
+            // don't get mixed into the ⌘V.
+            let source = CGEventSource(stateID: .privateState)
             for isDown in [true, false] {
                 let event = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: isDown)
                 event?.flags = .maskCommand
-                event?.post(tap: .cgSessionEventTap)
+                event?.post(tap: .cghidEventTap) // exactly like a real key press
             }
         }
     }
